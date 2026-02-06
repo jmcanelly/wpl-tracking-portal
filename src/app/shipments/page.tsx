@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
+
 type Shipment = {
   shipment_id: string;
   hawb: string | null;
@@ -12,7 +13,7 @@ type Shipment = {
   customer_reference: string | null;
   origin: string | null;
   destination: string | null;
-  current_status: string | null; // may be null or inconsistent
+  current_status: string | null;
   eta_updated: string | null;
   last_event_time: string | null;
 };
@@ -32,8 +33,7 @@ function asLower(v: unknown) {
 
 function parseDateMs(v: string | null) {
   if (!v) return Number.NaN;
-  const d = new Date(v);
-  const t = d.getTime();
+  const t = new Date(v).getTime();
   return Number.isNaN(t) ? Number.NaN : t;
 }
 
@@ -45,11 +45,6 @@ function getRoute(s: Shipment) {
   return `${s.origin ?? ""}→${s.destination ?? ""}`;
 }
 
-/**
- * Derive a clean status for display & sorting.
- * Goal: if something is delivered, never show “In progress”.
- * We intentionally avoid guessing from dates; we normalize from current_status text only.
- */
 type DerivedStatus =
   | "Delivered"
   | "Customs Released"
@@ -60,19 +55,14 @@ type DerivedStatus =
 function deriveStatus(s: Shipment): DerivedStatus {
   const raw = (s.current_status ?? "").trim().toLowerCase();
 
-  // Normalize common variants
   if (raw.includes("deliver")) return "Delivered";
   if (raw.includes("custom") && (raw.includes("release") || raw.includes("cleared")))
     return "Customs Released";
   if (raw.includes("discharg")) return "Discharged";
-
-  // If your pipeline ever writes these explicitly, respect them:
-  if (raw.includes("in transit") || raw.includes("transit")) return "In Transit";
+  if (raw.includes("transit")) return "In Transit";
   if (raw.includes("pre") || raw.includes("booked") || raw.includes("ready"))
     return "Pre-Departure";
 
-  // If current_status is blank/unknown, choose a safe default for air shipments
-  // (better than “In progress”, and it’s what users expect)
   return "In Transit";
 }
 
@@ -86,7 +76,6 @@ function statusBadgeClasses(status: DerivedStatus) {
       return "bg-purple-100 text-purple-700";
     case "Pre-Departure":
       return "bg-slate-100 text-slate-700";
-    case "In Transit":
     default:
       return "bg-[var(--wpl-blue)]/10 text-[var(--wpl-blue)]";
   }
@@ -96,44 +85,49 @@ export default function ShipmentsPage() {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
-  const [email, setEmail] = useState<string>("");
+  const [email, setEmail] = useState("");
 
   const [sortKey, setSortKey] = useState<SortKey>("last_event_time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
-    (async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const session = sessionData.session;
+  (async () => {
+    try {
+      // Get client session (localStorage)
+      const { data } = await supabase.auth.getSession();
+      const session = data.session;
 
       if (!session) {
         window.location.href = "/login";
         return;
       }
 
-      setEmail(session.user.email ?? "");
+      // Call server API with Bearer token
+      const res = await fetch("/api/shipments", {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
 
-      const { data, error } = await supabase
-        .from("shipments")
-        .select(
-          "shipment_id, hawb, mawb, po_number, customer_reference, origin, destination, current_status, eta_updated, last_event_time"
-        )
-        .order("last_event_time", { ascending: false })
-        .limit(300);
-
-      setLoading(false);
-
-      if (error) {
-        console.error(error);
+      if (res.status === 401) {
+        window.location.href = "/login";
         return;
       }
 
-      setRows((data ?? []) as Shipment[]);
-    })();
-  }, []);
+      const json = await res.json();
+      setRows(json.data ?? []);
+      setEmail(json.email ?? "");
+    } catch (err) {
+      console.error("Failed to load shipments", err);
+    } finally {
+      setLoading(false);
+    }
+  })();
+}, []);
+
 
   async function signOut() {
-    await supabase.auth.signOut();
+    await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
     window.location.href = "/";
   }
 
@@ -142,7 +136,6 @@ export default function ShipmentsPage() {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(nextKey);
-      // sensible defaults
       setSortDir(
         nextKey === "reference" || nextKey === "route" || nextKey === "status"
           ? "asc"
@@ -153,8 +146,8 @@ export default function ShipmentsPage() {
 
   const filteredAndSorted = useMemo(() => {
     const q = query.trim().toLowerCase();
-
     let list = rows;
+
     if (q) {
       list = rows.filter((s) =>
         [s.hawb, s.mawb, s.po_number, s.customer_reference, s.shipment_id]
@@ -165,7 +158,7 @@ export default function ShipmentsPage() {
 
     const dirMul = sortDir === "asc" ? 1 : -1;
 
-    const sorted = [...list].sort((a, b) => {
+    return [...list].sort((a, b) => {
       let av: string | number = "";
       let bv: string | number = "";
 
@@ -174,61 +167,35 @@ export default function ShipmentsPage() {
           av = asLower(getReference(a));
           bv = asLower(getReference(b));
           break;
-
         case "route":
           av = asLower(getRoute(a));
           bv = asLower(getRoute(b));
           break;
-
         case "status":
           av = asLower(deriveStatus(a));
           bv = asLower(deriveStatus(b));
           break;
-
-        case "eta_updated": {
-          const ams = parseDateMs(a.eta_updated);
-          const bms = parseDateMs(b.eta_updated);
-          // push missing dates to bottom
-          if (Number.isNaN(ams) && Number.isNaN(bms)) return 0;
-          if (Number.isNaN(ams)) return 1;
-          if (Number.isNaN(bms)) return -1;
-          av = ams;
-          bv = bms;
+        case "eta_updated":
+          av = parseDateMs(a.eta_updated);
+          bv = parseDateMs(b.eta_updated);
           break;
-        }
-
-        case "last_event_time": {
-          const ams = parseDateMs(a.last_event_time);
-          const bms = parseDateMs(b.last_event_time);
-          if (Number.isNaN(ams) && Number.isNaN(bms)) return 0;
-          if (Number.isNaN(ams)) return 1;
-          if (Number.isNaN(bms)) return -1;
-          av = ams;
-          bv = bms;
+        case "last_event_time":
+          av = parseDateMs(a.last_event_time);
+          bv = parseDateMs(b.last_event_time);
           break;
-        }
-
-        default:
-          av = 0;
-          bv = 0;
       }
+
+      if (Number.isNaN(av as number)) return 1;
+      if (Number.isNaN(bv as number)) return -1;
 
       if (typeof av === "number" && typeof bv === "number") {
         return (av - bv) * dirMul;
       }
       return String(av).localeCompare(String(bv)) * dirMul;
     });
-
-    return sorted;
   }, [rows, query, sortKey, sortDir]);
 
-  function Th({
-    label,
-    k,
-  }: {
-    label: string;
-    k: SortKey;
-  }) {
+  function Th({ label, k }: { label: string; k: SortKey }) {
     const active = sortKey === k;
     const arrow = active ? (sortDir === "asc" ? "▲" : "▼") : "";
     return (
@@ -248,7 +215,7 @@ export default function ShipmentsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-2xl border border-[var(--wpl-border)] bg-white p-5 shadow-sm md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col gap-3 rounded-2xl border bg-white p-5 shadow-sm md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-xl font-semibold">Track Shipments</h1>
           <p className="text-sm text-[var(--wpl-gray)]">
@@ -263,7 +230,7 @@ export default function ShipmentsPage() {
 
         <div className="flex flex-col gap-2 md:flex-row md:items-center">
           <input
-            className="w-full rounded-lg border border-[var(--wpl-border)] px-3 py-2 text-sm md:w-80"
+            className="w-full rounded-lg border px-3 py-2 text-sm md:w-80"
             placeholder="Search…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -277,7 +244,7 @@ export default function ShipmentsPage() {
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-[var(--wpl-border)] bg-white shadow-sm">
+      <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-[var(--wpl-bg)] text-left">
             <tr>
@@ -305,13 +272,12 @@ export default function ShipmentsPage() {
             ) : (
               filteredAndSorted.map((s) => {
                 const status = deriveStatus(s);
-
                 return (
                   <tr key={s.shipment_id} className="border-t hover:bg-black/[0.02]">
                     <td className="px-4 py-3 font-medium">
                       <Link
-                        className="text-[var(--wpl-blue)] hover:underline"
                         href={`/shipments/${encodeURIComponent(s.shipment_id)}`}
+                        className="text-[var(--wpl-blue)] hover:underline"
                       >
                         {getReference(s)}
                       </Link>
@@ -319,11 +285,9 @@ export default function ShipmentsPage() {
                         ID: {s.shipment_id}
                       </div>
                     </td>
-
                     <td className="px-4 py-3">
                       {s.origin ?? "—"} → {s.destination ?? "—"}
                     </td>
-
                     <td className="px-4 py-3">
                       <span
                         className={`rounded-full px-2 py-1 text-xs font-semibold ${statusBadgeClasses(
@@ -333,11 +297,9 @@ export default function ShipmentsPage() {
                         {status}
                       </span>
                     </td>
-
                     <td className="px-4 py-3">
                       {s.eta_updated ? new Date(s.eta_updated).toLocaleDateString() : "—"}
                     </td>
-
                     <td className="px-4 py-3">
                       {s.last_event_time
                         ? new Date(s.last_event_time).toLocaleString()
@@ -352,7 +314,7 @@ export default function ShipmentsPage() {
       </div>
 
       <div className="text-xs text-[var(--wpl-gray)]">
-        Showing {filteredAndSorted.length} of {rows.length} shipments (latest 300 loaded)
+        Showing {filteredAndSorted.length} of {rows.length} shipments
       </div>
     </div>
   );

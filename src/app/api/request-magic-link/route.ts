@@ -23,11 +23,19 @@ export async function POST(req: Request) {
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
     if (!supabaseUrl || !serviceKey) {
-      return NextResponse.json(
-        { error: "Server configuration error." },
-        { status: 500 }
-      );
-    }
+  return NextResponse.json(
+    {
+      error: "Server configuration error.",
+      missing: {
+        NEXT_PUBLIC_SUPABASE_URL: !!supabaseUrl,
+        SUPABASE_SERVICE_ROLE_KEY: !!serviceKey,
+        NEXT_PUBLIC_SITE_URL: !!process.env.NEXT_PUBLIC_SITE_URL,
+      },
+    },
+    { status: 500 }
+  );
+}
+
 
     // Server-side admin client (safe)
     const admin = createClient(supabaseUrl, serviceKey, {
@@ -42,11 +50,16 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (allowErr) {
-      return NextResponse.json(
-        { error: "Allowlist lookup failed." },
-        { status: 500 }
-      );
-    }
+  return NextResponse.json(
+    {
+      error: "Allowlist lookup failed.",
+      details: allowErr.message,
+      code: (allowErr as any).code,
+      hint: (allowErr as any).hint,
+    },
+    { status: 500 }
+  );
+}
 
     if (!allowed || !allowed.is_active) {
       return NextResponse.json(
@@ -62,7 +75,8 @@ export async function POST(req: Request) {
     const { error: otpErr } = await admin.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${redirectBase}/auth/callback`,
+        emailRedirectTo: `${redirectBase}/auth/callback?next=/shipments`,
+
       },
     });
 
