@@ -27,27 +27,39 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <header className="bg-[var(--wpl-navy)]">
+        <header className="bg-[var(--wpl-navy)] shadow-lg">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
             <Link href="/" className="flex items-center gap-3">
-              <Image
-                src="/wpl-logo.png"
-                alt="Wen-Parker Logistics"
-                width={180}
-                height={54}
-                priority
-              />
-              <span className="hidden text-sm font-medium text-white/80 md:inline">
+              <div className="rounded-lg bg-white/5 p-2 transition-colors hover:bg-white/10">
+                <Image
+                  src="/wpl-logo.png"
+                  alt="Wen-Parker Logistics"
+                  width={180}
+                  height={54}
+                  priority
+                />
+              </div>
+              <span className="hidden text-sm font-medium text-white/90 md:inline">
                 Tracking Portal
               </span>
             </Link>
 
+            {/* Solid white button - much better contrast! */}
             <Link
               href="/login"
-              className="rounded-lg bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/20"
+              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-[var(--wpl-navy)] transition-all hover:bg-white/90 shadow-sm"
             >
               Sign in
             </Link>
+
+            {/* Alternative: Brand red button (uncomment to use this instead)
+            <Link
+              href="/login"
+              className="rounded-lg bg-[var(--wpl-red)] px-4 py-2 text-sm font-semibold text-white transition-all hover:opacity-90 shadow-sm"
+            >
+              Sign in
+            </Link>
+            */}
           </div>
         </header>
 
